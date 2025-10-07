@@ -15,6 +15,10 @@ def _demo_args(**overrides):
         enable_cv=False,
         enable_asr=False,
         enable_websocket=False,
+        websocket_buffer=128,
+        steps=1,
+        interval=0.0,
+        payload_log_mode="quiet",
         steps=1,
         interval=0.0,
     )
@@ -37,3 +41,19 @@ def test_run_honors_stop_event():
     stop_event.set()
     asyncio.run(_run(helper, broadcaster, args, stop_event=stop_event))
     assert helper.last_performance_sample() is None
+
+
+def test_run_logs_payloads_when_requested(capsys):
+    args = _demo_args(steps=1, payload_log_mode="compact")
+    helper, broadcaster = _build_helper(args)
+    asyncio.run(_run(helper, broadcaster, args))
+    captured = capsys.readouterr()
+    assert "\n" not in captured.out.strip()  # compact JSON
+
+
+def test_run_suppresses_payload_logs_by_default(capsys):
+    args = _demo_args(steps=1)
+    helper, broadcaster = _build_helper(args)
+    asyncio.run(_run(helper, broadcaster, args))
+    captured = capsys.readouterr()
+    assert captured.out.strip() == ""

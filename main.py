@@ -62,7 +62,11 @@ def _build_helper(args: argparse.Namespace) -> Tuple[ArenaHelper, OverlayEventBr
         asr_model=args.enable_asr,
         websocket_overlay=args.enable_websocket,
     )
-    broadcaster = OverlayEventBroadcaster() if flags.websocket_overlay else None
+    broadcaster = (
+        OverlayEventBroadcaster(buffer=args.websocket_buffer)
+        if flags.websocket_overlay
+        else None
+    )
     helper = ArenaHelper(feature_flags=flags, broadcaster=broadcaster)
     return helper, broadcaster
 
@@ -97,7 +101,9 @@ async def _run(
 
             helper.record_session(_demo_session(step))
             payload = helper.overlay_payload()
-            print(json.dumps(asdict(payload), indent=2))
+            if args.payload_log_mode != "quiet":
+                indent = 2 if args.payload_log_mode == "pretty" else None
+                print(json.dumps(asdict(payload), indent=indent))
             if broadcaster:
                 await broadcaster.async_publish(payload)
 
@@ -144,6 +150,18 @@ def main() -> None:
         default=0.5,
         help="Seconds between GUI refresh ticks",
     )
+    parser.add_argument(
+        "--payload-log-mode",
+        choices=("quiet", "compact", "pretty"),
+        default="quiet",
+        help="Control overlay payload logging verbosity",
+    )
+    parser.add_argument(
+        "--websocket-buffer",
+        type=int,
+        default=128,
+        help="Number of overlay payloads retained for late websocket clients",
+    )
     args = parser.parse_args()
 
     helper, broadcaster = _build_helper(args)
@@ -154,6 +172,11 @@ def main() -> None:
 
     try:
         dashboard = ReactiveDashboard(helper, refresh_seconds=args.gui_refresh)
+    except ImportError:
+        print(
+            "tkinter is not available in this Python environment. "
+            "Install Tk support or pass --headless to run without the GUI."
+        )
     except ModuleNotFoundError:
         print("tkinter unavailable; running in headless mode.")
         asyncio.run(_run(helper, broadcaster, args))
