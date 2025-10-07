@@ -86,3 +86,19 @@ def __dir__() -> list[str]:
     """Return available attributes for auto-completion tools."""
 
     return sorted(set(list(globals().keys()) + __all__))
+"""FPS Booster toolkit."""
+
+from .system_optimization import BackgroundTask, SystemOptimizer
+from .adaptive_quality_manager import (
+    AdaptiveQualityManager,
+    GraphicsConfig,
+    TelemetrySample,
+)
+
+__all__ = [
+    "AdaptiveQualityManager",
+    "BackgroundTask",
+    "GraphicsConfig",
+    "SystemOptimizer",
+    "TelemetrySample",
+]
