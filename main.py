@@ -177,6 +177,8 @@ def main() -> None:
             "tkinter is not available in this Python environment. "
             "Install Tk support or pass --headless to run without the GUI."
         )
+    except ModuleNotFoundError:
+        print("tkinter unavailable; running in headless mode.")
         asyncio.run(_run(helper, broadcaster, args))
         return
     except Exception as exc:  # pragma: no cover - GUI backend specific

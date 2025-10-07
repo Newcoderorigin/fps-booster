@@ -19,6 +19,8 @@ def _demo_args(**overrides):
         steps=1,
         interval=0.0,
         payload_log_mode="quiet",
+        steps=1,
+        interval=0.0,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
