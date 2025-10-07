@@ -12,6 +12,9 @@ __all__ = [
     "AudioReport",
     "CognitiveCoach",
     "FeatureFlags",
+    "EliteConfiguration",
+    "EliteInterface",
+    "EliteTheme",
     "HardwareSnapshot",
     "HardwareTelemetryCollector",
     "KeywordSpotter",
@@ -34,6 +37,9 @@ _EXPORTS: Dict[str, Tuple[str, str]] = {
     "AudioReport": ("fps_booster.audio", "AudioReport"),
     "CognitiveCoach": ("fps_booster.cognitive", "CognitiveCoach"),
     "FeatureFlags": ("fps_booster.features", "FeatureFlags"),
+    "EliteConfiguration": ("fps_booster.interface", "EliteConfiguration"),
+    "EliteInterface": ("fps_booster.interface", "EliteInterface"),
+    "EliteTheme": ("fps_booster.interface", "EliteTheme"),
     "HardwareSnapshot": ("fps_booster.integrations", "HardwareSnapshot"),
     "HardwareTelemetryCollector": ("fps_booster.integrations", "HardwareTelemetryCollector"),
     "KeywordSpotter": ("fps_booster.integrations", "KeywordSpotter"),
@@ -54,6 +60,7 @@ if TYPE_CHECKING:  # pragma: no cover - for static analysers only
     from .audio import AudioAnalyzer, AudioReport
     from .cognitive import CognitiveCoach, PracticeRecommendation, SessionMetrics
     from .features import FeatureFlags
+    from .interface import EliteConfiguration, EliteInterface, EliteTheme
     from .helper import ArenaHelper
     from .integrations import (
         HardwareSnapshot,
