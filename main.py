@@ -7,14 +7,16 @@ import asyncio
 import json
 import math
 import random
+import threading
 from dataclasses import asdict
-from typing import Sequence
+from typing import Sequence, Tuple
 
 from fps_booster import (
     ArenaHelper,
     FeatureFlags,
     OverlayEventBroadcaster,
     PerformanceSample,
+    ReactiveDashboard,
     SessionMetrics,
 )
 
@@ -51,20 +53,43 @@ def _demo_session(step: int) -> SessionMetrics:
     return SessionMetrics(reaction_time=reaction, accuracy=accuracy, stress_index=stress)
 
 
-async def _run(args: argparse.Namespace) -> None:
+def _build_helper(args: argparse.Namespace) -> Tuple[ArenaHelper, OverlayEventBroadcaster | None]:
+    """Construct an ``ArenaHelper`` configured by command-line flags."""
+
     flags = FeatureFlags(
         hardware_telemetry=args.enable_hw,
         cv_model=args.enable_cv,
         asr_model=args.enable_asr,
         websocket_overlay=args.enable_websocket,
     )
-    broadcaster = OverlayEventBroadcaster() if flags.websocket_overlay else None
+    broadcaster = (
+        OverlayEventBroadcaster(buffer=args.websocket_buffer)
+        if flags.websocket_overlay
+        else None
+    )
     helper = ArenaHelper(feature_flags=flags, broadcaster=broadcaster)
+    return helper, broadcaster
+
+
+async def _run(
+    helper: ArenaHelper,
+    broadcaster: OverlayEventBroadcaster | None,
+    args: argparse.Namespace,
+    stop_event: threading.Event | None = None,
+) -> None:
+    """Drive the demo helper and optionally publish overlay payloads."""
+
     if broadcaster:
         await broadcaster.start()
 
+    step = 0
     try:
-        for step in range(args.steps):
+        while True:
+            if stop_event and stop_event.is_set():
+                break
+            if args.steps > 0 and step >= args.steps:
+                break
+
             frame = _demo_frame(step)
             helper.process_frame(frame)
 
@@ -76,10 +101,17 @@ async def _run(args: argparse.Namespace) -> None:
 
             helper.record_session(_demo_session(step))
             payload = helper.overlay_payload()
-            print(json.dumps(asdict(payload), indent=2))
+            if args.payload_log_mode != "quiet":
+                indent = 2 if args.payload_log_mode == "pretty" else None
+                print(json.dumps(asdict(payload), indent=indent))
             if broadcaster:
                 await broadcaster.async_publish(payload)
-            await asyncio.sleep(args.interval)
+
+            step += 1
+            if stop_event and stop_event.is_set():
+                break
+            if args.interval > 0:
+                await asyncio.sleep(args.interval)
     finally:
         if broadcaster:
             await broadcaster.stop()
@@ -95,15 +127,85 @@ def main() -> None:
         action="store_true",
         help="Broadcast overlay payloads via websocket",
     )
-    parser.add_argument("--steps", type=int, default=5, help="Number of demo iterations to run")
+    parser.add_argument(
+        "--steps",
+        type=int,
+        default=0,
+        help="Number of demo iterations to run (0 streams indefinitely)",
+    )
     parser.add_argument(
         "--interval",
         type=float,
         default=0.5,
         help="Seconds to wait between iterations",
     )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run without launching the reactive dashboard GUI",
+    )
+    parser.add_argument(
+        "--gui-refresh",
+        type=float,
+        default=0.5,
+        help="Seconds between GUI refresh ticks",
+    )
+    parser.add_argument(
+        "--payload-log-mode",
+        choices=("quiet", "compact", "pretty"),
+        default="quiet",
+        help="Control overlay payload logging verbosity",
+    )
+    parser.add_argument(
+        "--websocket-buffer",
+        type=int,
+        default=128,
+        help="Number of overlay payloads retained for late websocket clients",
+    )
     args = parser.parse_args()
-    asyncio.run(_run(args))
+
+    helper, broadcaster = _build_helper(args)
+
+    if args.headless:
+        asyncio.run(_run(helper, broadcaster, args))
+        return
+
+    dashboard: ReactiveDashboard | None = None
+    fallback_message: str | None = None
+
+    try:
+        dashboard = ReactiveDashboard(helper, refresh_seconds=args.gui_refresh)
+    except ImportError:
+        fallback_message = (
+            "tkinter is not available in this Python environment. "
+            "Install Tk support or pass --headless to run without the GUI."
+        )
+    except Exception as exc:  # pragma: no cover - GUI backend specific
+        if exc.__class__.__name__ == "TclError":
+            fallback_message = "tkinter backend error; running in headless mode."
+        else:
+            raise
+
+    if dashboard is None:
+        if fallback_message:
+            print(fallback_message)
+        asyncio.run(_run(helper, broadcaster, args))
+        return
+
+    stop_event = threading.Event()
+
+    def worker() -> None:
+        asyncio.run(_run(helper, broadcaster, args, stop_event=stop_event))
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    try:
+        dashboard.start()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop_event.set()
+        thread.join()
 
 
 if __name__ == "__main__":
