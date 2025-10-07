@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, List, Sequence, Tuple
 
+from .integrations import YOLOAdapter
+
 Pixel = Sequence[int]
 Frame = Sequence[Sequence[Pixel]]
 
@@ -16,12 +18,18 @@ class VisionReport:
     movement_score: float
     color_clusters: Sequence[dict]
     annotations: Sequence[str]
+    detections: Sequence[str]
 
 
 class VisionAnalyzer:
     """Derives actionable metadata from frame captures."""
 
-    def __init__(self, motion_threshold: float = 0.12, smoothing: float = 0.8) -> None:
+    def __init__(
+        self,
+        motion_threshold: float = 0.12,
+        smoothing: float = 0.8,
+        detector: YOLOAdapter | None = None,
+    ) -> None:
         if not 0.0 <= motion_threshold <= 1.0:
             raise ValueError("motion_threshold must be within [0, 1]")
         if not 0.0 < smoothing <= 1.0:
@@ -30,6 +38,7 @@ class VisionAnalyzer:
         self._smoothing = smoothing
         self._previous_flat: List[Tuple[int, int, int]] | None = None
         self._smoothed_motion = 0.0
+        self._detector = detector
 
     def analyze_frame(self, frame: Frame) -> VisionReport:
         """Analyze the frame and return movement and color insights."""
@@ -38,7 +47,15 @@ class VisionAnalyzer:
         movement = self._compute_motion(flat)
         clusters = self._cluster_colors(flat)
         annotations = self._build_annotations(movement, clusters)
-        return VisionReport(movement_score=movement, color_clusters=clusters, annotations=annotations)
+        detections = self._detector.detect(frame) if self._detector else []
+        if detections:
+            annotations = list(annotations) + [f"Detections: {', '.join(detections)}."]
+        return VisionReport(
+            movement_score=movement,
+            color_clusters=clusters,
+            annotations=annotations,
+            detections=tuple(detections),
+        )
 
     def _flatten(self, frame: Frame) -> List[Tuple[int, int, int]]:
         flat: List[Tuple[int, int, int]] = []

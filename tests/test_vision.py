@@ -1,3 +1,4 @@
+from fps_booster.integrations import YOLOAdapter
 from fps_booster.vision import VisionAnalyzer
 
 
@@ -13,7 +14,7 @@ def test_vision_motion_detection_increases():
 
 
 def test_color_clusters_identified():
-    analyzer = VisionAnalyzer()
+    analyzer = VisionAnalyzer(detector=YOLOAdapter.heuristic(threshold=0.4))
     frame = []
     for _ in range(2):
         frame.append([[255, 0, 0] for _ in range(4)])
@@ -23,3 +24,4 @@ def test_color_clusters_identified():
     assert report.color_clusters
     assert len(report.color_clusters) <= 3
     assert isinstance(report.color_clusters[0]["mean_color"], tuple)
+    assert report.detections in ((), ("luminous_region",))

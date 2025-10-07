@@ -6,6 +6,9 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Deque
 
+from .features import FeatureFlags
+from .integrations import HardwareSnapshot, HardwareTelemetryCollector
+
 
 @dataclass(frozen=True)
 class PerformanceSample:
@@ -25,18 +28,27 @@ class PerformanceRecommendation:
     quality_shift: int
     confidence: float
     narrative: str
+    hardware_snapshot: HardwareSnapshot | None
 
 
 class AdaptivePerformanceManager:
     """Learns smooth setting adjustments from telemetry streams."""
 
-    def __init__(self, target_fps: float = 60.0, history: int = 180) -> None:
+    def __init__(
+        self,
+        target_fps: float = 60.0,
+        history: int = 180,
+        feature_flags: FeatureFlags | None = None,
+        telemetry_collector: HardwareTelemetryCollector | None = None,
+    ) -> None:
         if target_fps <= 0:
             raise ValueError("target_fps must be positive")
         if history <= 0:
             raise ValueError("history must be positive")
         self._target_fps = target_fps
         self._history: Deque[PerformanceSample] = deque(maxlen=history)
+        self._feature_flags = feature_flags or FeatureFlags()
+        self._telemetry = telemetry_collector if self._feature_flags.hardware_telemetry else None
 
     def update(self, sample: PerformanceSample) -> PerformanceRecommendation:
         """Ingest telemetry and emit a fresh recommendation."""
@@ -46,10 +58,26 @@ class AdaptivePerformanceManager:
         if not 0 <= sample.cpu_util <= 100 or not 0 <= sample.gpu_util <= 100:
             raise ValueError("cpu_util and gpu_util must be within [0, 100]")
 
-        self._history.append(sample)
-        fps_ratio = sample.fps / self._target_fps
-        load = (sample.cpu_util + sample.gpu_util) / 200.0
-        frame_pressure = sample.frame_time_ms / (1000.0 / self._target_fps)
+        telemetry = None
+        if self._telemetry:
+            telemetry = self._telemetry.snapshot()
+            cpu_util = telemetry.cpu_util if telemetry.cpu_util is not None else sample.cpu_util
+            gpu_util = telemetry.gpu_util if telemetry.gpu_util is not None else sample.gpu_util
+        else:
+            cpu_util = sample.cpu_util
+            gpu_util = sample.gpu_util
+
+        enriched_sample = PerformanceSample(
+            fps=sample.fps,
+            frame_time_ms=sample.frame_time_ms,
+            cpu_util=cpu_util,
+            gpu_util=gpu_util,
+        )
+
+        self._history.append(enriched_sample)
+        fps_ratio = enriched_sample.fps / self._target_fps
+        load = (enriched_sample.cpu_util + enriched_sample.gpu_util) / 200.0
+        frame_pressure = enriched_sample.frame_time_ms / (1000.0 / self._target_fps)
 
         scaling_factor = self._compute_scaling(fps_ratio, load, frame_pressure)
         quality_shift = self._determine_quality_shift(fps_ratio, load)
@@ -61,6 +89,7 @@ class AdaptivePerformanceManager:
             quality_shift=quality_shift,
             confidence=round(confidence, 3),
             narrative=narrative,
+            hardware_snapshot=telemetry,
         )
 
     def _compute_scaling(self, fps_ratio: float, load: float, frame_pressure: float) -> float:

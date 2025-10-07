@@ -7,6 +7,8 @@ import math
 from dataclasses import dataclass
 from typing import Dict, Sequence, Tuple
 
+from .integrations import KeywordSpotter
+
 
 @dataclass(frozen=True)
 class AudioReport:
@@ -15,6 +17,7 @@ class AudioReport:
     dominant_frequency: float
     band_energy: Dict[str, float]
     event_confidence: float
+    keywords: Sequence[str]
 
 
 class AudioAnalyzer:
@@ -26,6 +29,7 @@ class AudioAnalyzer:
         window_size: int = 512,
         event_band: Tuple[int, int] = (200, 2000),
         intensity_threshold: float = 0.15,
+        keyword_spotter: KeywordSpotter | None = None,
     ) -> None:
         if sample_rate <= 0:
             raise ValueError("sample_rate must be positive")
@@ -38,6 +42,7 @@ class AudioAnalyzer:
         self._event_band = event_band
         self._intensity_threshold = intensity_threshold
         self._window = self._build_hann_window(window_size)
+        self._keyword_spotter = keyword_spotter
 
     def analyze(self, samples: Sequence[float]) -> AudioReport:
         """Return the spectral decomposition of the provided samples."""
@@ -58,10 +63,13 @@ class AudioAnalyzer:
         event_energy = self._band_energy(freqs, magnitudes, self._event_band)
         event_confidence = min(1.0, (event_energy / total_energy) / self._intensity_threshold)
 
+        keywords = self._keyword_spotter.predict(samples) if self._keyword_spotter else []
+
         return AudioReport(
             dominant_frequency=round(dominant_frequency, 2),
             band_energy={k: round(v, 4) for k, v in band_energy.items()},
             event_confidence=round(event_confidence, 3),
+            keywords=tuple(keywords),
         )
 
     def _aggregate_bands(self, freqs: Sequence[float], magnitudes: Sequence[float]) -> Dict[str, float]:

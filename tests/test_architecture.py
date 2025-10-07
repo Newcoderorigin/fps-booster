@@ -6,9 +6,11 @@ def test_default_architecture_structure():
     assert {m.name for m in modules} == {
         "Vision Analyzer",
         "Audio Intelligence",
+        "Hardware Telemetry Bridge",
         "Adaptive Performance",
         "Cognitive Coach",
         "Narrative Overlay",
+        "WebSocket Gateway",
     }
     for module in modules:
         assert module.inputs

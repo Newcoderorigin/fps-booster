@@ -1,3 +1,5 @@
+from fps_booster.features import FeatureFlags
+from fps_booster.integrations import HardwareSnapshot
 from fps_booster.performance import AdaptivePerformanceManager, PerformanceRecommendation, PerformanceSample
 
 
@@ -19,3 +21,20 @@ def test_performance_manager_recovers_with_high_fps():
     assert recommendation.scaling_factor >= 0.9
     assert recommendation.quality_shift >= 0
     assert recommendation.confidence > 0.5
+
+
+def test_performance_manager_uses_hardware_snapshot():
+    class StubCollector:
+        def snapshot(self) -> HardwareSnapshot:
+            return HardwareSnapshot(cpu_util=80.0, gpu_util=90.0, cpu_temp_c=55.0, gpu_temp_c=60.0)
+
+    manager = AdaptivePerformanceManager(
+        target_fps=60,
+        history=3,
+        feature_flags=FeatureFlags(hardware_telemetry=True),
+        telemetry_collector=StubCollector(),
+    )
+    recommendation = manager.update(PerformanceSample(fps=45, frame_time_ms=22, cpu_util=10, gpu_util=10))
+    assert recommendation.hardware_snapshot is not None
+    assert recommendation.hardware_snapshot.cpu_util == 80.0
+    assert recommendation.hardware_snapshot.gpu_temp_c == 60.0
