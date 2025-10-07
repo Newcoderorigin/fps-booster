@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+import json
+import time
+import urllib.request
+
+from fps_booster.audio import AudioReport
+from fps_booster.cognitive import PracticeRecommendation, SessionMetrics
+from fps_booster.gui import ReactiveDashboard, ReactiveDashboardState, ReactiveDashboardViewModel, ReactiveTheme
+from fps_booster.helper import ArenaHelper, OverlayPayload
 from fps_booster.audio import AudioReport
 from fps_booster.cognitive import PracticeRecommendation, SessionMetrics
 from fps_booster.gui import ReactiveDashboardState, ReactiveDashboardViewModel, ReactiveTheme
@@ -69,3 +77,20 @@ def test_view_model_composes_metrics_and_palette() -> None:
     assert state.practice_prompt == "Sharpen focus."
     assert state.theme_palette["pulse"] == "surge"
     assert state.commentary == "Test commentary."
+
+
+def test_dashboard_serves_state_payload() -> None:
+    helper = ArenaHelper()
+    dashboard = ReactiveDashboard(helper, refresh_seconds=0.1, host="127.0.0.1", port=0)
+    dashboard.start(block=False)
+    try:
+        helper.process_performance(PerformanceSample(fps=120.0, frame_time_ms=8.3, cpu_util=55.0, gpu_util=60.0))
+        helper.record_session(SessionMetrics(reaction_time=0.3, accuracy=0.7, stress_index=0.4))
+        time.sleep(0.05)
+        assert dashboard.base_url is not None
+        with urllib.request.urlopen(f"{dashboard.base_url}/state", timeout=2) as response:
+            payload = json.load(response)
+        assert payload["metrics"]
+        assert payload["hero"].startswith("══")
+    finally:
+        dashboard.stop()

@@ -162,6 +162,17 @@ def main() -> None:
         default=128,
         help="Number of overlay payloads retained for late websocket clients",
     )
+    parser.add_argument(
+        "--dashboard-host",
+        default="127.0.0.1",
+        help="Host interface for the reactive web dashboard",
+    )
+    parser.add_argument(
+        "--dashboard-port",
+        type=int,
+        default=8765,
+        help="Port for the reactive web dashboard (0 selects an ephemeral port)",
+    )
     args = parser.parse_args()
 
     helper, broadcaster = _build_helper(args)
@@ -170,6 +181,23 @@ def main() -> None:
         asyncio.run(_run(helper, broadcaster, args))
         return
 
+    dashboard = ReactiveDashboard(
+        helper,
+        refresh_seconds=args.gui_refresh,
+        host=args.dashboard_host,
+        port=args.dashboard_port,
+    )
+
+    try:
+        dashboard.start(block=False)
+    except OSError as exc:
+        print(
+            "Failed to start web dashboard:",
+            exc,
+        )
+        print("Running headless instead.")
+        asyncio.run(_run(helper, broadcaster, args))
+        return
     try:
         dashboard = ReactiveDashboard(helper, refresh_seconds=args.gui_refresh)
     except ImportError:
@@ -191,11 +219,20 @@ def main() -> None:
     stop_event = threading.Event()
 
     def worker() -> None:
+        try:
+            asyncio.run(_run(helper, broadcaster, args, stop_event=stop_event))
+        finally:
+            stop_event.set()
+            dashboard.stop()
         asyncio.run(_run(helper, broadcaster, args, stop_event=stop_event))
 
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
     try:
+        dashboard.wait_forever()
+    finally:
+        stop_event.set()
+        dashboard.stop()
         dashboard.start()
     except KeyboardInterrupt:
         pass

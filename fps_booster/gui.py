@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+import json
+import threading
+from dataclasses import dataclass
+from datetime import datetime
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Dict, Iterable, List, Sequence
+from urllib.parse import urlparse
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, Iterable, List, Sequence
@@ -321,6 +329,7 @@ class ReactiveDashboardViewModel:
 
 
 class ReactiveDashboard:
+    """Serve a local web dashboard that streams helper telemetry."""
     """Tkinter-based dashboard rendering telemetry in real time."""
 
     def __init__(
@@ -328,6 +337,405 @@ class ReactiveDashboard:
         helper: ArenaHelper,
         refresh_seconds: float = 0.5,
         view_model: ReactiveDashboardViewModel | None = None,
+        host: str = "127.0.0.1",
+        port: int = 8765,
+    ) -> None:
+        if refresh_seconds <= 0:
+            raise ValueError("refresh_seconds must be positive")
+        if port < 0:
+            raise ValueError("port must be non-negative")
+        self._helper = helper
+        self._view_model = view_model or ReactiveDashboardViewModel()
+        self._refresh_seconds = refresh_seconds
+        self._host = host
+        self._port = port
+        self._httpd: _DashboardHTTPServer | None = None
+        self._serve_thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+        self._ready_event = threading.Event()
+        self._lock = threading.Lock()
+        self._base_url: str | None = None
+
+    @property
+    def base_url(self) -> str | None:
+        """Return the base URL where the dashboard is served."""
+
+        return self._base_url
+
+    @property
+    def refresh_seconds(self) -> float:
+        """Return the refresh cadence advertised to the frontend."""
+
+        return self._refresh_seconds
+
+    def start(self, block: bool = True) -> None:
+        """Start the HTTP server and optionally block until stopped."""
+
+        self._start_server()
+        if block:
+            self.wait_forever()
+
+    def wait_forever(self) -> None:
+        """Block the caller until the dashboard is stopped."""
+
+        try:
+            while not self._stop_event.wait(timeout=0.5):
+                pass
+        except KeyboardInterrupt:
+            self.stop()
+
+    def stop(self) -> None:
+        """Shut down the HTTP server and release resources."""
+
+        self._stop_event.set()
+        httpd = self._httpd
+        serve_thread = self._serve_thread
+        if httpd is None:
+            return
+        self._httpd = None
+        self._serve_thread = None
+        httpd.shutdown()
+        httpd.server_close()
+        if serve_thread:
+            serve_thread.join(timeout=1.5)
+
+    def snapshot_state(self) -> ReactiveDashboardState:
+        """Collect the latest helper telemetry and render dashboard state."""
+
+        with self._lock:
+            payload = self._helper.overlay_payload()
+            self._view_model.apply_payload(payload)
+            sample = self._helper.last_performance_sample()
+            if sample:
+                self._view_model.ingest_performance_sample(sample)
+            session = self._helper.last_session_metrics()
+            if session:
+                self._view_model.ingest_session_metrics(session)
+            return self._view_model.render_state()
+
+    def render_dashboard_page(self) -> str:
+        """Return the HTML shell for the reactive dashboard."""
+
+        palette = self._view_model.theme.palette_for(1.0, 0.35)
+        return _DASHBOARD_TEMPLATE.format(
+            title=f"{self._view_model.theme.name} Metrics Console",
+            refresh_ms=int(self._refresh_seconds * 1000),
+            background=palette["background"],
+            accent_primary=palette["accent_primary"],
+            accent_secondary=palette["accent_secondary"],
+            accent_tertiary=palette["accent_tertiary"],
+            text_primary=self._view_model.theme.text_primary,
+            text_muted=self._view_model.theme.text_muted,
+        )
+
+    def state_payload(self) -> Dict[str, object]:
+        """Return the serialized dashboard state for HTTP responses."""
+
+        state = self.snapshot_state()
+        return {
+            "timestamp": state.timestamp.isoformat() + "Z",
+            "metrics": [
+                {
+                    "label": pulse.label,
+                    "value": pulse.value,
+                    "unit": pulse.unit,
+                    "status": pulse.status,
+                    "trend": pulse.trend,
+                    "emphasis": pulse.emphasis,
+                }
+                for pulse in state.metrics
+            ],
+            "theme": state.theme_palette,
+            "commentary": state.commentary,
+            "practice": state.practice_prompt,
+            "hero": state.hero_banner,
+        }
+
+    def _start_server(self) -> None:
+        if self._httpd is not None:
+            raise RuntimeError("dashboard already running")
+        self._stop_event.clear()
+        self._ready_event.clear()
+        try:
+            httpd = _DashboardHTTPServer((self._host, self._port), _DashboardRequestHandler, self)
+        except OSError:
+            self._stop_event.set()
+            self._ready_event.set()
+            raise
+        self._httpd = httpd
+        bound_host, bound_port = httpd.server_address
+        display_host = self._host
+        if display_host in {"0.0.0.0", ""}:
+            display_host = "127.0.0.1"
+        elif bound_host not in {"0.0.0.0", ""}:
+            display_host = bound_host
+        self._base_url = f"http://{display_host}:{bound_port}"
+        self._serve_thread = threading.Thread(
+            target=self._serve_forever,
+            name="ReactiveDashboardServer",
+            daemon=True,
+        )
+        self._serve_thread.start()
+        self._ready_event.wait(timeout=1.0)
+        print(f"Reactive web dashboard available at {self._base_url}", flush=True)
+
+    def _serve_forever(self) -> None:
+        if self._httpd is None:
+            return
+        self._ready_event.set()
+        self._httpd.serve_forever(poll_interval=0.25)
+
+
+class _DashboardHTTPServer(ThreadingHTTPServer):
+    """Threading HTTP server that exposes the dashboard instance."""
+
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, server_address, handler_class, dashboard: ReactiveDashboard):
+        super().__init__(server_address, handler_class)
+        self.dashboard = dashboard
+
+
+class _DashboardRequestHandler(BaseHTTPRequestHandler):
+    """Serve the dashboard shell and reactive state payloads."""
+
+    server: _DashboardHTTPServer
+
+    def do_GET(self) -> None:  # noqa: N802 - required signature
+        parsed = urlparse(self.path)
+        route = parsed.path
+        if route in {"", "/", "/index.html"}:
+            self._serve_html()
+        elif route == "/state":
+            self._serve_state()
+        elif route == "/health":
+            self._serve_json({"status": "ok"})
+        else:
+            self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
+
+    def do_HEAD(self) -> None:  # noqa: N802 - required signature
+        parsed = urlparse(self.path)
+        route = parsed.path
+        if route in {"", "/", "/index.html"}:
+            self._serve_html(head_only=True)
+        elif route == "/state":
+            self._serve_state(head_only=True)
+        elif route == "/health":
+            self._serve_json({"status": "ok"}, head_only=True)
+        else:
+            self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
+
+    def log_message(self, format: str, *args) -> None:  # noqa: A003 - method name from base class
+        return
+
+    def _serve_html(self, head_only: bool = False) -> None:
+        dashboard = self.server.dashboard
+        html = dashboard.render_dashboard_page().encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(html)))
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.end_headers()
+        if not head_only:
+            self.wfile.write(html)
+
+    def _serve_state(self, head_only: bool = False) -> None:
+        dashboard = self.server.dashboard
+        payload = json.dumps(dashboard.state_payload()).encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        if not head_only:
+            self.wfile.write(payload)
+
+    def _serve_json(self, payload: Dict[str, object], head_only: bool = False) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if not head_only:
+            self.wfile.write(body)
+
+
+_DASHBOARD_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{title}</title>
+    <style>
+      :root {{
+        color-scheme: dark;
+        --bg: {background};
+        --accent-primary: {accent_primary};
+        --accent-secondary: {accent_secondary};
+        --accent-tertiary: {accent_tertiary};
+        --text-primary: {text_primary};
+        --text-muted: {text_muted};
+      }}
+      * {{ box-sizing: border-box; }}
+      body {{
+        margin: 0;
+        min-height: 100vh;
+        font-family: 'Segoe UI', 'Inter', system-ui, sans-serif;
+        background: var(--bg);
+        color: var(--text-primary);
+        display: flex;
+        flex-direction: column;
+        padding: 32px 36px 48px;
+        gap: 20px;
+      }}
+      header {{
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }}
+      .hero {{
+        font-size: 1.6rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--accent-primary);
+      }}
+      .hero-sub {{
+        font-size: 0.95rem;
+        color: var(--text-muted);
+        max-width: 720px;
+        line-height: 1.6;
+      }}
+      .grid {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 16px;
+      }}
+      .metric {{
+        border-radius: 16px;
+        padding: 16px 20px;
+        background: linear-gradient(145deg, rgba(255,255,255,0.05), rgba(0,0,0,0.35));
+        border: 1px solid rgba(255,255,255,0.06);
+        box-shadow: 0 12px 24px rgba(0,0,0,0.35);
+        transition: transform 140ms ease, box-shadow 140ms ease;
+      }}
+      .metric:hover {{
+        transform: translateY(-4px);
+        box-shadow: 0 18px 32px rgba(0,0,0,0.45);
+      }}
+      .metric h3 {{
+        margin: 0;
+        font-size: 0.95rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(255,255,255,0.78);
+      }}
+      .metric .value {{
+        font-size: 2.4rem;
+        font-weight: 700;
+        margin: 12px 0 8px;
+        color: var(--text-primary);
+      }}
+      .metric .status {{
+        font-size: 0.9rem;
+        color: var(--text-muted);
+      }}
+      .metric[data-emphasis="primary"] {{
+        background: linear-gradient(150deg, rgba(72,229,194,0.65), rgba(33,61,83,0.85));
+        color: #010203;
+      }}
+      .metric[data-emphasis="secondary"] {{
+        border-color: rgba(86,204,242,0.55);
+      }}
+      .metric[data-emphasis="tertiary"] {{
+        border-color: rgba(245,166,35,0.55);
+      }}
+      .commentary {{
+        font-size: 1.05rem;
+        line-height: 1.7;
+        max-width: 820px;
+        color: var(--text-primary);
+      }}
+      .practice {{
+        font-size: 0.95rem;
+        color: var(--text-muted);
+        max-width: 720px;
+      }}
+      footer {{
+        margin-top: auto;
+        font-size: 0.8rem;
+        color: rgba(255,255,255,0.4);
+      }}
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="hero" id="hero">{title}</div>
+      <div class="hero-sub" id="timestamp">Initializing flux telemetry&hellip;</div>
+    </header>
+    <section class="grid" id="metrics"></section>
+    <section class="commentary" id="commentary">Awaiting telemetry pulse.</section>
+    <section class="practice" id="practice">Prime focus routines will appear once sessions stream in.</section>
+    <footer>Refresh cadence: {refresh_ms}ms · Powered by the Luminal Flux pipeline.</footer>
+    <script>
+      const REFRESH_MS = {refresh_ms};
+      const metricsContainer = document.getElementById('metrics');
+      const commentaryEl = document.getElementById('commentary');
+      const practiceEl = document.getElementById('practice');
+      const heroEl = document.getElementById('hero');
+      const timestampEl = document.getElementById('timestamp');
+
+      function applyPalette(theme) {{
+        const root = document.documentElement.style;
+        root.setProperty('--bg', theme.background);
+        root.setProperty('--accent-primary', theme.accent_primary);
+        root.setProperty('--accent-secondary', theme.accent_secondary);
+        root.setProperty('--accent-tertiary', theme.accent_tertiary);
+      }}
+
+      function renderMetrics(metrics) {{
+        metricsContainer.innerHTML = '';
+        metrics.forEach(metric => {{
+          const card = document.createElement('article');
+          card.className = 'metric';
+          card.dataset.emphasis = metric.emphasis;
+          const title = document.createElement('h3');
+          title.textContent = metric.label;
+          const value = document.createElement('div');
+          value.className = 'value';
+          value.textContent = metric.unit ? `${{metric.value}} ${{metric.unit}}` : metric.value;
+          const status = document.createElement('div');
+          status.className = 'status';
+          status.textContent = `${{metric.trend}} · ${{metric.status}}`;
+          card.append(title, value, status);
+          metricsContainer.appendChild(card);
+        }});
+      }}
+
+      async function refresh() {{
+        try {{
+          const response = await fetch('/state', {{ cache: 'no-store' }});
+          if (!response.ok) return;
+          const payload = await response.json();
+          applyPalette(payload.theme);
+          renderMetrics(payload.metrics);
+          commentaryEl.textContent = payload.commentary;
+          practiceEl.textContent = payload.practice;
+          heroEl.textContent = payload.hero;
+          const timestamp = new Date(payload.timestamp);
+          timestampEl.textContent = `Last pulse ${{timestamp.toLocaleString()}}`;
+        }} catch (err) {{
+          console.error('Refresh failed', err);
+        }}
+      }}
+
+      refresh();
+      setInterval(refresh, REFRESH_MS);
+    </script>
+  </body>
+</html>
+"""
     ) -> None:
         if refresh_seconds <= 0:
             raise ValueError("refresh_seconds must be positive")
