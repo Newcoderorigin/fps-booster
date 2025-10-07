@@ -22,6 +22,11 @@ __all__ = [
     "OverlayEventBroadcaster",
     "PerformanceRecommendation",
     "PerformanceSample",
+    "ReactiveDashboard",
+    "ReactiveDashboardState",
+    "ReactiveDashboardViewModel",
+    "ReactiveTheme",
+    "MetricPulse",
     "PracticeRecommendation",
     "SessionMetrics",
     "VisionAnalyzer",
@@ -47,6 +52,11 @@ _EXPORTS: Dict[str, Tuple[str, str]] = {
     "OverlayEventBroadcaster": ("fps_booster.integrations", "OverlayEventBroadcaster"),
     "PerformanceRecommendation": ("fps_booster.performance", "PerformanceRecommendation"),
     "PerformanceSample": ("fps_booster.performance", "PerformanceSample"),
+    "ReactiveDashboard": ("fps_booster.gui", "ReactiveDashboard"),
+    "ReactiveDashboardState": ("fps_booster.gui", "ReactiveDashboardState"),
+    "ReactiveDashboardViewModel": ("fps_booster.gui", "ReactiveDashboardViewModel"),
+    "ReactiveTheme": ("fps_booster.gui", "ReactiveTheme"),
+    "MetricPulse": ("fps_booster.gui", "MetricPulse"),
     "PracticeRecommendation": ("fps_booster.cognitive", "PracticeRecommendation"),
     "SessionMetrics": ("fps_booster.cognitive", "SessionMetrics"),
     "VisionAnalyzer": ("fps_booster.vision", "VisionAnalyzer"),
@@ -61,6 +71,7 @@ if TYPE_CHECKING:  # pragma: no cover - for static analysers only
     from .cognitive import CognitiveCoach, PracticeRecommendation, SessionMetrics
     from .features import FeatureFlags
     from .interface import EliteConfiguration, EliteInterface, EliteTheme
+    from .gui import MetricPulse, ReactiveDashboard, ReactiveDashboardState, ReactiveDashboardViewModel, ReactiveTheme
     from .helper import ArenaHelper
     from .integrations import (
         HardwareSnapshot,
@@ -102,10 +113,12 @@ from .adaptive_quality_manager import (
     TelemetrySample,
 )
 
-__all__ = [
-    "AdaptiveQualityManager",
-    "BackgroundTask",
-    "GraphicsConfig",
-    "SystemOptimizer",
-    "TelemetrySample",
-]
+__all__.extend(
+    [
+        "AdaptiveQualityManager",
+        "BackgroundTask",
+        "GraphicsConfig",
+        "SystemOptimizer",
+        "TelemetrySample",
+    ]
+)
