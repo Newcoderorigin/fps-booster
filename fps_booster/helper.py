@@ -68,7 +68,9 @@ class ArenaHelper:
         self._last_vision: VisionReport | None = None
         self._last_audio: AudioReport | None = None
         self._last_performance: PerformanceRecommendation | None = None
+        self._last_performance_sample: PerformanceSample | None = None
         self._last_practice: PracticeRecommendation | None = None
+        self._last_session: SessionMetrics | None = None
 
     def process_frame(self, frame: Sequence[Sequence[Sequence[int]]]) -> VisionReport:
         """Analyze a captured frame."""
@@ -85,6 +87,7 @@ class ArenaHelper:
     def process_performance(self, sample: PerformanceSample) -> PerformanceRecommendation:
         """Update performance recommendations."""
 
+        self._last_performance_sample = sample
         self._last_performance = self._performance.update(sample)
         return self._last_performance
 
@@ -92,8 +95,19 @@ class ArenaHelper:
         """Record player metrics and return the latest practice recommendation."""
 
         self._coach.record_session(metrics)
+        self._last_session = metrics
         self._last_practice = self._coach.recommend_practice()
         return self._last_practice
+
+    def last_performance_sample(self) -> PerformanceSample | None:
+        """Return the most recent raw performance sample processed."""
+
+        return self._last_performance_sample
+
+    def last_session_metrics(self) -> SessionMetrics | None:
+        """Return the most recent recorded session metrics."""
+
+        return self._last_session
 
     def overlay_payload(self) -> OverlayPayload:
         """Return a fused overlay payload with narrative commentary."""
