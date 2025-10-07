@@ -198,6 +198,23 @@ def main() -> None:
         print("Running headless instead.")
         asyncio.run(_run(helper, broadcaster, args))
         return
+    try:
+        dashboard = ReactiveDashboard(helper, refresh_seconds=args.gui_refresh)
+    except ImportError:
+        print(
+            "tkinter is not available in this Python environment. "
+            "Install Tk support or pass --headless to run without the GUI."
+        )
+    except ModuleNotFoundError:
+        print("tkinter unavailable; running in headless mode.")
+        asyncio.run(_run(helper, broadcaster, args))
+        return
+    except Exception as exc:  # pragma: no cover - GUI backend specific
+        if exc.__class__.__name__ == "TclError":
+            print("tkinter backend error; running in headless mode.")
+            asyncio.run(_run(helper, broadcaster, args))
+            return
+        raise
 
     stop_event = threading.Event()
 
@@ -207,6 +224,7 @@ def main() -> None:
         finally:
             stop_event.set()
             dashboard.stop()
+        asyncio.run(_run(helper, broadcaster, args, stop_event=stop_event))
 
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
@@ -215,6 +233,11 @@ def main() -> None:
     finally:
         stop_event.set()
         dashboard.stop()
+        dashboard.start()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop_event.set()
         thread.join()
 
 

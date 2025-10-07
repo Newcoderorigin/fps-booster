@@ -10,6 +10,10 @@ from fps_booster.audio import AudioReport
 from fps_booster.cognitive import PracticeRecommendation, SessionMetrics
 from fps_booster.gui import ReactiveDashboard, ReactiveDashboardState, ReactiveDashboardViewModel, ReactiveTheme
 from fps_booster.helper import ArenaHelper, OverlayPayload
+from fps_booster.audio import AudioReport
+from fps_booster.cognitive import PracticeRecommendation, SessionMetrics
+from fps_booster.gui import ReactiveDashboardState, ReactiveDashboardViewModel, ReactiveTheme
+from fps_booster.helper import OverlayPayload
 from fps_booster.performance import PerformanceRecommendation, PerformanceSample
 from fps_booster.vision import VisionReport
 

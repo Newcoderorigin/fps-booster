@@ -10,6 +10,9 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Dict, Iterable, List, Sequence
 from urllib.parse import urlparse
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Dict, Iterable, List, Sequence
 
 from .cognitive import SessionMetrics
 from .helper import ArenaHelper, OverlayPayload
@@ -327,6 +330,7 @@ class ReactiveDashboardViewModel:
 
 class ReactiveDashboard:
     """Serve a local web dashboard that streams helper telemetry."""
+    """Tkinter-based dashboard rendering telemetry in real time."""
 
     def __init__(
         self,
@@ -732,3 +736,140 @@ _DASHBOARD_TEMPLATE = """<!DOCTYPE html>
   </body>
 </html>
 """
+    ) -> None:
+        if refresh_seconds <= 0:
+            raise ValueError("refresh_seconds must be positive")
+        self._helper = helper
+        self._view_model = view_model or ReactiveDashboardViewModel()
+        self._refresh_ms = max(int(refresh_seconds * 1000), 100)
+
+        import tkinter as tk
+
+        self._tk = tk
+        self._root = tk.Tk()
+        self._root.title(f"{self._view_model.theme.name} Metrics Console")
+        self._root.configure(bg=self._view_model.theme.background_base)
+
+        self._hero_var = tk.StringVar(value=self._view_model.theme.hero_banner())
+        self._commentary_var = tk.StringVar(value="Awaiting telemetry pulse.")
+        self._practice_var = tk.StringVar(value="Prime focus routines will appear once sessions stream in.")
+        self._metric_vars: Dict[str, tk.StringVar] = {}
+        self._metric_status: Dict[str, tk.StringVar] = {}
+        self._metric_frames: Dict[str, tk.Frame] = {}
+
+        self._build_layout()
+
+    def _build_layout(self) -> None:
+        tk = self._tk
+        hero = tk.Label(
+            self._root,
+            textvariable=self._hero_var,
+            fg=self._view_model.theme.text_primary,
+            bg=self._view_model.theme.background_base,
+            justify=tk.LEFT,
+            font=("Helvetica", 14, "bold"),
+        )
+        hero.pack(padx=20, pady=(20, 10), anchor=tk.W)
+
+        self._metrics_container = tk.Frame(self._root, bg=self._view_model.theme.background_base)
+        self._metrics_container.pack(padx=20, pady=10, fill=tk.BOTH, expand=True)
+
+        commentary = tk.Label(
+            self._root,
+            textvariable=self._commentary_var,
+            fg=self._view_model.theme.text_primary,
+            bg=self._view_model.theme.background_base,
+            justify=tk.LEFT,
+            wraplength=720,
+            font=("Helvetica", 11),
+        )
+        commentary.pack(padx=20, pady=(10, 4), anchor=tk.W)
+
+        practice = tk.Label(
+            self._root,
+            textvariable=self._practice_var,
+            fg=self._view_model.theme.text_muted,
+            bg=self._view_model.theme.background_base,
+            justify=tk.LEFT,
+            wraplength=720,
+            font=("Helvetica", 10, "italic"),
+        )
+        practice.pack(padx=20, pady=(0, 20), anchor=tk.W)
+
+    def start(self) -> None:
+        """Begin the auto-refresh loop and enter the Tk event loop."""
+
+        self._schedule_refresh()
+        self._root.mainloop()
+
+    def _schedule_refresh(self) -> None:
+        payload = self._helper.overlay_payload()
+        self._view_model.apply_payload(payload)
+        sample = self._helper.last_performance_sample()
+        if sample:
+            self._view_model.ingest_performance_sample(sample)
+        session = self._helper.last_session_metrics()
+        if session:
+            self._view_model.ingest_session_metrics(session)
+        state = self._view_model.render_state()
+        self._apply_state(state)
+        self._root.after(self._refresh_ms, self._schedule_refresh)
+
+    def _apply_state(self, state: ReactiveDashboardState) -> None:
+        tk = self._tk
+        palette = state.theme_palette
+        self._root.configure(bg=palette["background"])
+        self._metrics_container.configure(bg=palette["background"])
+        self._hero_var.set(state.hero_banner)
+        self._commentary_var.set(state.commentary)
+        self._practice_var.set(state.practice_prompt)
+
+        for index, pulse in enumerate(state.metrics):
+            frame = self._ensure_metric_frame(pulse.label, palette, index)
+            value_var = self._metric_vars[pulse.label]
+            status_var = self._metric_status[pulse.label]
+            value_var.set(f"{pulse.value} {pulse.unit}".strip())
+            status_var.set(f"{pulse.trend} · {pulse.status}")
+            accent = self._accent_for(palette, pulse.emphasis)
+            frame.configure(bg=accent)
+
+        # Hide frames not present in current state
+        active_labels = {pulse.label for pulse in state.metrics}
+        for label, frame in list(self._metric_frames.items()):
+            if label not in active_labels:
+                frame.pack_forget()
+
+    def _ensure_metric_frame(self, label: str, palette: Dict[str, str | float], index: int) -> "tk.Frame":
+        tk = self._tk
+        if label in self._metric_frames:
+            frame = self._metric_frames[label]
+            frame.pack_configure(pady=6, padx=0)
+            return frame
+
+        frame = tk.Frame(self._metrics_container, bg=self._accent_for(palette, "secondary"), padx=12, pady=10)
+        title = tk.Label(frame, text=label, fg=palette["text_primary"], bg=frame.cget("bg"), font=("Helvetica", 12, "bold"))
+        value_var = tk.StringVar()
+        self._metric_vars[label] = value_var
+        value = tk.Label(frame, textvariable=value_var, fg=palette["text_primary"], bg=frame.cget("bg"), font=("Helvetica", 18, "bold"))
+        status_var = tk.StringVar()
+        self._metric_status[label] = status_var
+        status = tk.Label(frame, textvariable=status_var, fg=palette["text_muted"], bg=frame.cget("bg"), font=("Helvetica", 10))
+
+        title.pack(anchor=tk.W)
+        value.pack(anchor=tk.W)
+        status.pack(anchor=tk.W)
+
+        frame.pack(side=tk.LEFT, padx=10, pady=6, ipadx=4, ipady=4)
+        self._metric_frames[label] = frame
+        return frame
+
+    @staticmethod
+    def _accent_for(palette: Dict[str, str | float], emphasis: str) -> str:
+        match emphasis:
+            case "primary":
+                return str(palette["accent_primary"])
+            case "secondary":
+                return str(palette["accent_secondary"])
+            case "tertiary":
+                return str(palette["accent_tertiary"])
+        return str(palette["accent_secondary"])
